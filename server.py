@@ -1,62 +1,90 @@
-# server.py (simple version)
+# server.py
 import cv2
 import numpy as np
 from ultralytics import YOLO
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+import os
 
 app = FastAPI()
 
-# Allow React frontend
+# =========================
+# CORS (Render + Vercel)
+# =========================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["*"],  # allow Render & Vercel
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Load YOLO model once
-model = YOLO("yolo11s.pt")  # make sure this file is in same folder
+# =========================
+# Load YOLO model ONCE
+# =========================
+MODEL_PATH = "yolo11s.pt"
 
+print("Loading YOLO model...")
+model = YOLO(MODEL_PATH)
+print("YOLO model loaded successfully")
 
+# =========================
+# WebSocket Endpoint
+# =========================
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """Receives JPEG frames, runs YOLO, sends back annotated JPEG frames."""
     await websocket.accept()
-    print("Client connected")
+    print("✅ Client connected")
 
     try:
         while True:
-            # Receive raw JPEG bytes
+            # Receive JPEG bytes
             data = await websocket.receive_bytes()
 
-            # Convert bytes → NumPy array → BGR frame
-            nparr = np.frombuffer(data, np.uint8)
-            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            # Decode JPEG → frame
+            frame = cv2.imdecode(
+                np.frombuffer(data, np.uint8),
+                cv2.IMREAD_COLOR
+            )
 
             if frame is None:
                 await websocket.send_text("ERROR: Frame decode failed")
                 continue
 
-            # YOLO detection
-            results = model(frame)
-            annotated = results[0].plot()  # draw boxes
+            # Run YOLO
+            results = model(frame, conf=0.4)
+            annotated_frame = results[0].plot()
 
-            # Encode annotated frame back to JPEG
-            success, encoded = cv2.imencode(".jpg", annotated)
-
+            # Encode back to JPEG
+            success, buffer = cv2.imencode(".jpg", annotated_frame)
             if not success:
-                await websocket.send_text("ERROR: Encode failed")
+                await websocket.send_text("ERROR: JPEG encode failed")
                 continue
 
             # Send annotated frame
-            await websocket.send_bytes(encoded.tobytes())
+            await websocket.send_bytes(buffer.tobytes())
+
+    except WebSocketDisconnect:
+        print("❌ Client disconnected")
 
     except Exception as e:
-        print("Client disconnected:", e)
+        print("🔥 WebSocket error:", e)
 
+# =========================
+# Health Check (IMPORTANT for Render)
+# =========================
+@app.get("/")
+def health():
+    return {"status": "Backend running 🚀"}
 
+# =========================
+# Local run
+# =========================
 if __name__ == "__main__":
-    uvicorn.run("server:app", host="0.0.0.0", port=8000)
+    uvicorn.run(
+        "server:app",
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 8000)),
+        reload=False
+    )
