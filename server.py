@@ -14,20 +14,20 @@ app = FastAPI()
 # =========================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # allow Render & Vercel
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # =========================
-# Load YOLO model ONCE
+# Load YOLO model (CPU SAFE)
 # =========================
-MODEL_PATH = "yolo11s.pt"
+MODEL_PATH = "yolov8n.pt"   # 🔥 FAST & CPU FRIENDLY
 
-print("Loading YOLO model...")
+print("🔄 Loading YOLO model...")
 model = YOLO(MODEL_PATH)
-print("YOLO model loaded successfully")
+print("✅ YOLO model loaded")
 
 # =========================
 # WebSocket Endpoint
@@ -42,27 +42,35 @@ async def websocket_endpoint(websocket: WebSocket):
             # Receive JPEG bytes
             data = await websocket.receive_bytes()
 
-            # Decode JPEG → frame
+            # Decode frame
             frame = cv2.imdecode(
                 np.frombuffer(data, np.uint8),
                 cv2.IMREAD_COLOR
             )
 
             if frame is None:
-                await websocket.send_text("ERROR: Frame decode failed")
+                print("⚠️ Frame decode failed")
                 continue
 
-            # Run YOLO
-            results = model(frame, conf=0.4)
+            # 🔥 YOLO inference (Render optimized)
+            results = model(
+                frame,
+                imgsz=320,      # SMALL SIZE
+                conf=0.35,
+                device="cpu"
+            )
+
+            print("📦 Detections:", len(results[0].boxes))
+
             annotated_frame = results[0].plot()
 
-            # Encode back to JPEG
+            # Encode JPEG
             success, buffer = cv2.imencode(".jpg", annotated_frame)
             if not success:
-                await websocket.send_text("ERROR: JPEG encode failed")
+                print("⚠️ Encode failed")
                 continue
 
-            # Send annotated frame
+            # Send back frame
             await websocket.send_bytes(buffer.tobytes())
 
     except WebSocketDisconnect:
@@ -72,14 +80,14 @@ async def websocket_endpoint(websocket: WebSocket):
         print("🔥 WebSocket error:", e)
 
 # =========================
-# Health Check (IMPORTANT for Render)
+# Health Check (Render needs this)
 # =========================
 @app.get("/")
 def health():
     return {"status": "Backend running 🚀"}
 
 # =========================
-# Local run
+# Run Server
 # =========================
 if __name__ == "__main__":
     uvicorn.run(
