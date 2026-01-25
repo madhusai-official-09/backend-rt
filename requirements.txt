@@ -1,6 +1,3 @@
-fastapi
-uvicorn
 opencv-python-headless
+pandas
 numpy
-ultralytics
-python-multipart
