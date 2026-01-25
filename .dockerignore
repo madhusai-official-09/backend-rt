@@ -1,0 +1,14 @@
+.git
+.gitignore
+node_modules
+venv
+__pycache__
+.env
+.env.local
+.env.production
+data/
+datasets/
+*.csv
+*.zip
+*.tar
+*.log
