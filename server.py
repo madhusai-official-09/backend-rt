@@ -1,98 +1,107 @@
-# server.py
 import cv2
 import numpy as np
+import torch
 from ultralytics import YOLO
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-import os
 
 app = FastAPI()
 
-# =========================
-# CORS (Render + Vercel)
-# =========================
+# Allow React frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://frontend-v3kp.vercel.app/"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# =========================
-# Load YOLO model (CPU SAFE)
-# =========================
-MODEL_PATH = "yolov8n.pt"   # 🔥 FAST & CPU FRIENDLY
+# -----------------------------
+# Device Selection
+# -----------------------------
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+HALF = DEVICE == "cuda"
 
-print("🔄 Loading YOLO model...")
-model = YOLO(MODEL_PATH)
-print("✅ YOLO model loaded")
+print(f"Using Device: {DEVICE}")
 
-# =========================
-# WebSocket Endpoint
-# =========================
+# -----------------------------
+# Load Model
+# -----------------------------
+model = YOLO("yolo11n.pt")      # Faster than yolo11s
+model.to(DEVICE)
+
+# JPEG Quality
+JPEG_QUALITY = 70
+
+# Resize Resolution
+FRAME_WIDTH = 640
+FRAME_HEIGHT = 480
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("✅ Client connected")
+    print("Client Connected")
 
     try:
         while True:
-            # Receive JPEG bytes
+
+            # Receive image bytes
             data = await websocket.receive_bytes()
 
-            # Decode frame
-            frame = cv2.imdecode(
-                np.frombuffer(data, np.uint8),
-                cv2.IMREAD_COLOR
-            )
+            # Decode JPEG
+            nparr = np.frombuffer(data, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
             if frame is None:
-                print("⚠️ Frame decode failed")
                 continue
 
-            # 🔥 YOLO inference (Render optimized)
-            results = model(
-                frame,
-                imgsz=320,      # SMALL SIZE
-                conf=0.35,
-                device="cpu"
+            # Resize frame
+            frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
+
+            # Inference
+            with torch.inference_mode():
+
+                results = model(
+                    frame,
+                    imgsz=640,
+                    device=DEVICE,
+                    half=HALF,
+                    verbose=False,
+                    conf=0.35
+                )
+
+            # Draw detections
+            annotated = results[0].plot()
+
+            # Encode back to JPEG
+            success, encoded = cv2.imencode(
+                ".jpg",
+                annotated,
+                [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
             )
 
-            print("📦 Detections:", len(results[0].boxes))
-
-            annotated_frame = results[0].plot()
-
-            # Encode JPEG
-            success, buffer = cv2.imencode(".jpg", annotated_frame)
             if not success:
-                print("⚠️ Encode failed")
                 continue
 
-            # Send back frame
-            await websocket.send_bytes(buffer.tobytes())
+            # Send annotated image
+            await websocket.send_bytes(encoded.tobytes())
 
     except WebSocketDisconnect:
-        print("❌ Client disconnected")
+        print("Client disconnected")
 
     except Exception as e:
-        print("🔥 WebSocket error:", e)
+        print("Error:", e)
 
-# =========================
-# Health Check (Render needs this)
-# =========================
-@app.get("/")
-def health():
-    return {"status": "Backend running 🚀"}
+    finally:
+        await websocket.close()
 
-# =========================
-# Run Server
-# =========================
+
 if __name__ == "__main__":
     uvicorn.run(
         "server:app",
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8000)),
+        port=8000,
         reload=False
     )
